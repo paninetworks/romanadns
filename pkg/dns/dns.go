@@ -451,6 +451,7 @@ func (kd *KubeDNS) newPortalService(service *v1.Service) {
 	subCache := treecache.NewTreeCache()
 	recordValue, recordLabel := util.GetSkyMsg(service.Spec.ClusterIP, 0)
 	subCache.SetEntry(recordLabel, recordValue, kd.fqdn(service, recordLabel))
+	glog.Infof("DEBUG: Stas: Registering new service recordLabel=%s, recordValue=%s, fqdn=%s", recordLabel, recordValue, kd.fqdn(service, recordLabel))
 
 	// Generate SRV Records
 	for i := range service.Spec.Ports {
@@ -464,6 +465,18 @@ func (kd *KubeDNS) newPortalService(service *v1.Service) {
 			subCache.SetEntry(recordLabel, srvValue, kd.fqdn(service, append(l, recordLabel)...), l...)
 		}
 	}
+
+	if len(service.Spec.ExternalIPs) > 0 {
+		glog.Infof("DEBUG: Stas: detecting new service with an external IP")
+	}
+
+	for i := range service.Spec.ExternalIPs {
+		externalRecordValue, externalRecordLabel := util.GetSkyMsg(service.Spec.ExternalIPs[i], 0)
+		fqdn := kd.fqdn(service, externalRecordLabel)
+		glog.Infof("DEBUG: Stas: Registering new service with fqdn=%s, RecordValue=%s, RecordLabel=%s, ExternalIp=%s", fqdn, externalRecordValue, externalRecordLabel, service.Spec.ExternalIPs[i])
+		subCache.SetEntry(externalRecordLabel, externalRecordValue, fqdn)
+	}
+
 	subCachePath := append(kd.domainPath, serviceSubdomain, service.Namespace)
 	host := getServiceFQDN(kd.domain, service)
 	reverseRecord, _ := util.GetSkyMsg(host, 0)
@@ -471,6 +484,7 @@ func (kd *KubeDNS) newPortalService(service *v1.Service) {
 	kd.cacheLock.Lock()
 	defer kd.cacheLock.Unlock()
 	kd.cache.SetSubCache(service.Name, subCache, subCachePath...)
+	glog.Infof("DEBUG: Stas: SetSubCache(service.Name=%s, subCache=%s, subCachePath...=%s)", service.Name, subCache, subCachePath)
 	kd.reverseRecordMap[service.Spec.ClusterIP] = reverseRecord
 	kd.clusterIPServiceMap[service.Spec.ClusterIP] = service
 }
