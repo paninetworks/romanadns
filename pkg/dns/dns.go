@@ -494,6 +494,7 @@ func (kd *KubeDNS) newPortalService(service *v1.Service) {
 	kd.clusterIPServiceMap[service.Spec.ClusterIP] = service
 }
 
+// generateRecordsForPods fills provided subCache with A/SRV records for endpoints associated with a given service.
 func (kd *KubeDNS) generateRecordsForPods(service *v1.Service, e *v1.Endpoints, subCache treecache.TreeCache) (treecache.TreeCache, error) {
 
 	for idx := range e.Subsets {
@@ -578,7 +579,7 @@ func (kd *KubeDNS) newHeadlessService(service *v1.Service) error {
 	return kd.generateRecordsForHeadlessService(endpoints, service)
 }
 
-// findEndpointsForSerive looks for endpoints selected by the service.
+// findEndpointsForService looks for endpoints selected by the service.
 func (kd *KubeDNS) findEndpointsForService(service *v1.Service) (*v1.Endpoints, error) {
 	key, err := kcache.MetaNamespaceKeyFunc(service)
 	if err != nil {
