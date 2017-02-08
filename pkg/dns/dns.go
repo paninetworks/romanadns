@@ -310,6 +310,7 @@ func (kd *KubeDNS) updateService(oldObj, newObj interface{}) {
 				(old.Spec.Type == v1.ServiceTypeExternalName) {
 				kd.removeService(oldObj)
 			}
+
 			kd.newService(newObj)
 		}
 	}
@@ -479,9 +480,11 @@ func (kd *KubeDNS) newPortalService(service *v1.Service) {
 		subCache.SetEntry(externalRecordLabel, externalRecordValue, fqdn)
 	}
 
-	subCache, err := kd.generateRecordsForPods(service, subCache)
-	if err != nil {
-		glog.Infof("DEBUG: Stas: failed to generate Pods records for service %s, err=%s", service.Name, err)
+	if endpoints, err := kd.findEndpointsForService(service); err == nil && endpoints != nil {
+		subCache, err = kd.generateRecordsForPods(service, endpoints, subCache)
+		if err != nil {
+			glog.Infof("DEBUG: Stas: failed to generate Pods records for service %s, err=%s", service.Name, err)
+		}
 	}
 
 	subCachePath := append(kd.domainPath, serviceSubdomain, service.Namespace)
@@ -496,29 +499,8 @@ func (kd *KubeDNS) newPortalService(service *v1.Service) {
 	kd.clusterIPServiceMap[service.Spec.ClusterIP] = service
 }
 
-func (kd *KubeDNS) generateRecordsForPods(service *v1.Service, subCache treecache.TreeCache) (treecache.TreeCache, error) {
+func (kd *KubeDNS) generateRecordsForPods(service *v1.Service, e *v1.Endpoints, subCache treecache.TreeCache) (treecache.TreeCache, error) {
 	glog.Infof("DEBUG: Stas: in generateRecordsForPods()")
-
-	key, err := kcache.MetaNamespaceKeyFunc(service)
-	if err != nil {
-		return subCache, err
-	}
-
-	endpoints, exists, err := kd.endpointsStore.GetByKey(key)
-	if err != nil {
-		return  subCache, fmt.Errorf("failed to get endpoints object from endpoints store - %v", err)
-	}
-
-	if !exists {
-		glog.V(1).Infof("Could not find endpoints for service %q in namespace %q. DNS records will be created once endpoints show up.",
-			service.Name, service.Namespace)
-		return subCache, nil
-	}
-
-	e, ok := endpoints.(*v1.Endpoints);
-	if !ok {
-		return  subCache, fmt.Errorf("failed to cast endpoints, expected *v1.Endpoints.")
-	}
 
 	for idx := range e.Subsets {
 		for subIdx := range e.Subsets[idx].Addresses {
@@ -555,33 +537,12 @@ func (kd *KubeDNS) generateRecordsForPods(service *v1.Service, subCache treecach
 func (kd *KubeDNS) generateRecordsForHeadlessService(e *v1.Endpoints, svc *v1.Service) error {
 	subCache := treecache.NewTreeCache()
 	glog.V(4).Infof("Endpoints Annotations: %v", e.Annotations)
-	for idx := range e.Subsets {
-		for subIdx := range e.Subsets[idx].Addresses {
-			address := &e.Subsets[idx].Addresses[subIdx]
-			endpointIP := address.IP
-			recordValue, endpointName := util.GetSkyMsg(endpointIP, 0)
-			if hostLabel, exists := getHostname(address); exists {
-				endpointName = hostLabel
-			}
-			subCache.SetEntry(endpointName, recordValue, kd.fqdn(svc, endpointName))
-			for portIdx := range e.Subsets[idx].Ports {
-				endpointPort := &e.Subsets[idx].Ports[portIdx]
-				if endpointPort.Name != "" && endpointPort.Protocol != "" {
-					srvValue := kd.generateSRVRecordValue(svc, int(endpointPort.Port), endpointName)
-					glog.V(2).Infof("Added SRV record %+v", srvValue)
 
-					l := []string{"_" + strings.ToLower(string(endpointPort.Protocol)), "_" + endpointPort.Name}
-					subCache.SetEntry(endpointName, srvValue, kd.fqdn(svc, append(l, endpointName)...), l...)
-				}
-			}
-
-			// Generate PTR records only for Named Headless service.
-			if _, has := getHostname(address); has {
-				reverseRecord, _ := util.GetSkyMsg(kd.fqdn(svc, endpointName), 0)
-				kd.reverseRecordMap[endpointIP] = reverseRecord
-			}
-		}
+	subCache, err := kd.generateRecordsForPods(svc, e, subCache)
+	if err != nil {
+		return fmt.Errorf("Failed to generate A/SRV records for endspoints associated with service %s.%s - %s", svc.Name, svc.Namespace, err)
 	}
+
 	subCachePath := append(kd.domainPath, serviceSubdomain, svc.Namespace)
 	kd.cacheLock.Lock()
 	defer kd.cacheLock.Unlock()
@@ -612,23 +573,40 @@ func (kd *KubeDNS) newHeadlessService(service *v1.Service) error {
 	// Format is as follows:
 	// For a service x, with pods a and b create DNS records,
 	// a.x.ns.domain. and, b.x.ns.domain.
+	endpoints, err := kd.findEndpointsForService(service)
+	if err != nil {
+		glog.Infof("Failed to find enpoints for service %s.%s - %s", service.Name, service.Namespace, err)
+	}
+
+	if endpoints == nil {
+		return nil
+	}
+
+	return kd.generateRecordsForHeadlessService(endpoints, service)
+}
+
+// findEndpointsForSerive looks for endpoints selected by the service.
+func (kd *KubeDNS) findEndpointsForService(service *v1.Service) (*v1.Endpoints, error) {
 	key, err := kcache.MetaNamespaceKeyFunc(service)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	e, exists, err := kd.endpointsStore.GetByKey(key)
 	if err != nil {
-		return fmt.Errorf("failed to get endpoints object from endpoints store - %v", err)
+		return nil, fmt.Errorf("failed to get endpoints object from endpoints store - %v", err)
 	}
 	if !exists {
 		glog.V(1).Infof("Could not find endpoints for service %q in namespace %q. DNS records will be created once endpoints show up.",
 			service.Name, service.Namespace)
-		return nil
+		return nil, nil
 	}
-	if e, ok := e.(*v1.Endpoints); ok {
-		return kd.generateRecordsForHeadlessService(e, service)
+	endpoints, ok := e.(*v1.Endpoints)
+	if !ok {
+		return nil, fmt.Errorf("Not an endpoint - %v", e)
 	}
-	return nil
+
+	return endpoints, nil
+
 }
 
 // Generates skydns records for an ExternalName service.
