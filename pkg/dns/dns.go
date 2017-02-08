@@ -453,7 +453,7 @@ func (kd *KubeDNS) newPortalService(service *v1.Service) {
 	subCache := treecache.NewTreeCache()
 	recordValue, recordLabel := util.GetSkyMsg(service.Spec.ClusterIP, 0)
 	subCache.SetEntry(recordLabel, recordValue, kd.fqdn(service, recordLabel))
-	glog.Infof("DEBUG: Stas: Registering new service recordLabel=%s, recordValue=%s, fqdn=%s", recordLabel, recordValue, kd.fqdn(service, recordLabel))
+	glog.V(3).Infof("Registering new service recordLabel=%s, recordValue=%s, fqdn=%s", recordLabel, recordValue, kd.fqdn(service, recordLabel))
 
 	// Generate SRV Records
 	for i := range service.Spec.Ports {
@@ -468,22 +468,18 @@ func (kd *KubeDNS) newPortalService(service *v1.Service) {
 		}
 	}
 
-	if len(service.Spec.ExternalIPs) > 0 {
-		glog.Infof("DEBUG: Stas: detecting new service with an external IP")
-	}
-
 	for i := range service.Spec.ExternalIPs {
 		externalRecordValue, externalRecordLabel := util.GetSkyMsg(service.Spec.ExternalIPs[i], 0)
 
 		fqdn := kd.fqdn(service, externalRecordLabel)
-		glog.Infof("DEBUG: Stas: Registering new service with fqdn=%s, RecordValue=%s, RecordLabel=%s, ExternalIp=%s", fqdn, externalRecordValue, externalRecordLabel, service.Spec.ExternalIPs[i])
+		glog.V(3).Infof("Registering new service with fqdn=%s, RecordValue=%s, RecordLabel=%s, ExternalIp=%s", fqdn, externalRecordValue, externalRecordLabel, service.Spec.ExternalIPs[i])
 		subCache.SetEntry(externalRecordLabel, externalRecordValue, fqdn)
 	}
 
 	if endpoints, err := kd.findEndpointsForService(service); err == nil && endpoints != nil {
 		subCache, err = kd.generateRecordsForPods(service, endpoints, subCache)
 		if err != nil {
-			glog.Infof("DEBUG: Stas: failed to generate Pods records for service %s, err=%s", service.Name, err)
+			glog.V(4).Infof("Could not generate A/SRV records for endpoints associated with the service %s.%s - %s", service.Name, err)
 		}
 	}
 
@@ -494,13 +490,11 @@ func (kd *KubeDNS) newPortalService(service *v1.Service) {
 	kd.cacheLock.Lock()
 	defer kd.cacheLock.Unlock()
 	kd.cache.SetSubCache(service.Name, subCache, subCachePath...)
-	glog.Infof("DEBUG: Stas: SetSubCache(service.Name=%s, subCache=%s, subCachePath...=%s)", service.Name, subCache, subCachePath)
 	kd.reverseRecordMap[service.Spec.ClusterIP] = reverseRecord
 	kd.clusterIPServiceMap[service.Spec.ClusterIP] = service
 }
 
 func (kd *KubeDNS) generateRecordsForPods(service *v1.Service, e *v1.Endpoints, subCache treecache.TreeCache) (treecache.TreeCache, error) {
-	glog.Infof("DEBUG: Stas: in generateRecordsForPods()")
 
 	for idx := range e.Subsets {
 		for subIdx := range e.Subsets[idx].Addresses {
@@ -530,7 +524,6 @@ func (kd *KubeDNS) generateRecordsForPods(service *v1.Service, e *v1.Endpoints, 
 		}
 	}
 
-	glog.Infof("DEBUG: Stas: in generateRecordsForPods() - exiting normally")
 	return subCache, nil
 }
 
@@ -540,7 +533,7 @@ func (kd *KubeDNS) generateRecordsForHeadlessService(e *v1.Endpoints, svc *v1.Se
 
 	subCache, err := kd.generateRecordsForPods(svc, e, subCache)
 	if err != nil {
-		return fmt.Errorf("Failed to generate A/SRV records for endspoints associated with service %s.%s - %s", svc.Name, svc.Namespace, err)
+		return fmt.Errorf("Failed to generate A/SRV records for endpoints associated with the service %s.%s - %s", svc.Name, svc.Namespace, err)
 	}
 
 	subCachePath := append(kd.domainPath, serviceSubdomain, svc.Namespace)
