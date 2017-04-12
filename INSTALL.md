@@ -1,5 +1,6 @@
 ## Install Prerequisites:
 
+ On All nodes:
  Change in /etc/sysctl.conf
  net.bridge.bridge-nf-call-iptables = 1
  net.bridge.bridge-nf-call-arptables = 1
